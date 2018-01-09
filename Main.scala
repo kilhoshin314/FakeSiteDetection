@@ -1,6 +1,6 @@
 import scala.io._
 import java.io._
-//import java.io.File
+import java.util.Date
 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -239,14 +239,44 @@ object Main {
     val term_node = new libsvm.svm_node
     term_node.index = -1
 
-	def predict(target: String, convertMap: HashMap[String, Int], mode: Int): Double = {
+	def sanitize(htmlFile: File): Option[String] =  {
+      val sanitizer = new htmlSanitizer(convertMap, cnvAddFlag)
+      var cntConvert = 0
+      var convertHtml: Option[String] = None
+  		// サニタイジング&木構造データ作成
+      try {
+        convertHtml = sanitizer.sanitizeJsoup(htmlFile)
+      } catch {
+        case e: Exception =>
+        System.out.println("Jsoup_ERROR: " + e.getMessage)
+      }
+		//-- 木構造データ作成 End
+
+		// タグ・数値変換データの出力
+		/*
+		val mapStr = sanitizer.getConvertMap()
+		mapStr match {
+		  case Some(x) =>
+			// タグ・数値変換データファイルを上書き(UTF-8)
+			val convertFile = new File(convertFname)
+			val pWriter = new PrintWriter(new BufferedWriter(new OutputStreamWriter(new FileOutputStream(convertFile),"UTF-8")))
+			pWriter.write(x)
+			pWriter.close()
+			System.out.println("Convert file updated: " + convertFname)
+		  case None =>
+			// do nothing
+		}
+		*/
+		convertHtml
+	}
+   
+	def predict(target: String, convertMap: HashMap[String, Int], file_name: String, mode: Int): (Double, TreeNode) = {
 	  var targetStr = ""
 	  val invalidLabel = -1
       val dummyNode = new TreeNode(invalidLabel, ArrayBuffer[TreeNode]())
 	  var targetTree = new TreeNode(invalidLabel, ArrayBuffer[TreeNode]())
 	  
 	  if(mode == 1){
-	    // ファイル渡ししてる
 		var htmlStr = ""
 			try { 
 				val htmlList = Html.getSource(target)
@@ -254,11 +284,22 @@ object Main {
 			} catch {
 				case e:Exception => println("URL_ERROR: " + e.getMessage)
 			}
-			val htmlFile = new File("htmlFile")
-			val filewriter = new FileWriter(htmlFile)
-			filewriter.write(htmlStr)
+
+			val tmpFile = new File("tmp")
+			val tmpfilewriter = new FileWriter("tmp", true)
+			tmpfilewriter.write(htmlStr)
+			targetStr = sanitize(tmpFile).getOrElse("")
+			tmpfilewriter.close()
+			tmpFile.delete()
+			
+			val htmlFile = new File(file_name)
+			val filewriter = new FileWriter(file_name, true)
+			val date = "%tY-%<tm-%<td %<tH:%<tM:%<tS" format new Date
+			filewriter.write(date)
+			filewriter.write("\n" + target)
+			filewriter.write("\n" + htmlStr + "\n\n")
 			filewriter.close()
-			targetStr = sanitize(htmlFile).getOrElse("")
+			
 			//println("targetStr: " + targetStr)
 		targetTree = IntTreeParser.parse(targetStr).getOrElse(dummyNode)
 		println("targetTree: " + targetTree)
@@ -277,85 +318,81 @@ object Main {
           val temp = ptk.eval(targetTree, trainTree)
           if(norm)
             { node.value = temp/math.sqrt(ptk.eval(targetTree, targetTree) * diag(index - 1))
-              println("node.value: " + node.value)
+              //println("node.value: " + node.value)
 			  }
           else { node.value = temp
-			  println("node.value: " + node.value)
+			  //println("node.value: " + node.value)
 			  }
         }else {
           node.value = 0.0
         }
         node
       }.toArray :+ term_node
-      svm.svm_predict(model, test_vec)
+      (svm.svm_predict(model, test_vec), targetTree)
     }
-
-    if(interactive) {
-      var continue = true
-
-      while(continue) {
-          println("Please input target(URL/Tree) or  Type 'q' to abort.")
-    	  val target = scala.io.StdIn.readLine
-      	  if(target == "q") continue = false
-      	  else{
-			  //try{ print(if(predict(target, convertMap, 1) > 0) "\n<FAKE>\n" else "\n<AUTHENTIC>\n") } catch { case e:Exception => print("\n<Error: Unpredictable>\n") }
-			  print(if(predict(target, convertMap, 1) > 0) "\n<FAKE>\n" else "\n<AUTHENTIC>\n")
-			  println
-    	  }
-      }
-    } else if (verification.length != 0) {
-		val acc: Double = verify(verification)
-		println("accuracy: " + acc)
-    }
-    println
-    println("Service terminated!  Thank you!")
-
-
-  def sanitize(htmlFile: File): Option[String] =  {
-      val sanitizer = new htmlSanitizer(convertMap, cnvAddFlag)
-      var cntConvert = 0
-      var convertHtml: Option[String] = None
-  		// サニタイジング&木構造データ作成
-      try {
-        convertHtml = sanitizer.sanitizeJsoup(htmlFile)
-      } catch {
-        case e: Exception =>
-        System.out.println("Jsoup_ERROR: " + e.getMessage)
-      }
-    //-- 木構造データ作成 End
-
-    // タグ・数値変換データの出力
-	/*
-    val mapStr = sanitizer.getConvertMap()
-    mapStr match {
-      case Some(x) =>
-        // タグ・数値変換データファイルを上書き(UTF-8)
-        val convertFile = new File(convertFname)
-        val pWriter = new PrintWriter(new BufferedWriter(new OutputStreamWriter(new FileOutputStream(convertFile),"UTF-8")))
-        pWriter.write(x)
-        pWriter.close()
-        System.out.println("Convert file updated: " + convertFname)
-      case None =>
-        // do nothing
-    }
-	*/
-    convertHtml
-   }
-   
-   def verify (testfile: String): Double = {
+	
+	def verify (testfile: String): Double = {
+	  val file_name = "tmp"
       var line_array = readFile(testfile)
 	  val result: ArrayBuffer[Int] = line_array.map { line =>
         val index = line.indexOf(":")
 		val label = line.substring(0,index).toInt
 		val target = line.substring(index+1)
-		//val prediction = try{ if(predict(target, convertMap, 2) > 0) 1 else -1} catch { case e:Exception => print("\n<Error: Unpredictable>\n") }
-		val prediction = if(predict(target, convertMap, 2) > 0) 1 else -1
+	    val result = predict(target, convertMap, file_name, 2)
+	    val prediction = if(result._1 > 0) 1  else -1
 		val true_cnt: Int = if (label == prediction) 1 else 0
 		println("true_cnt: " + true_cnt)
 		true_cnt
       }
 	  ((result.sum).toDouble)/((result.length).toDouble)
     }
+
+	/*
+    val file2: File = new File("./Log.csv")
+	val filewriter2: FileWriter= new FileWriter("./Log.csv", true)
+	filewriter2.write("prediction, label, URL\n")
+	filewriter2.close()
+	*/
+	val dummy: String = ""
+	
+    if(interactive) {
+      var continue = true
+	  val file_name = "htmlfile"
+      while(continue) {
+          println("Type 'target URL' or  Type 'q' to abort.")
+    	  val target = scala.io.StdIn.readLine
+      	  if(target == "q") continue = false
+      	  else{
+			  val file2: File = new File("./Log.csv")
+			  val filewriter2: FileWriter= new FileWriter("./Log.csv", true)
+		      val tmp = predict(target, convertMap, file_name, 1)
+			  val prediction = if(tmp._1 > 0) "f"  else "a"
+			  println(if(prediction == "f") "\n<FAKE>\n" else "\n<AUTHENTIC>\n")
+			  var label = "0"
+			  var continue2 = true
+			  while(continue2){
+				  println("Type 'a'(AUTHENTIC) or 'f'(Fake) or 'u'(Unknown) to label")
+				  label = scala.io.StdIn.readLine
+				  if(label != "a" && label != "f" && label != "u"){}
+				  else{
+					  println("Sure? (y/n)")
+					  var answer = scala.io.StdIn.readLine
+					  if(answer == "y"){ continue2 = false}
+				  }
+			  }
+			val date = "%tY-%<tm-%<td %<tH:%<tM:%<tS" format new Date
+			val result: String = date + ", " + prediction + ", " + label + ", " + target + "\n"
+			filewriter2.write(result)
+			filewriter2.close()
+    	  }
+      }
+    } else if (verification.length != 0) {
+		val acc: Double = verify(verification)
+		println("accuracy: " + acc)
+    }
+
+    println
+    println("Service terminated!  Thank you!")
   }
 }
 
